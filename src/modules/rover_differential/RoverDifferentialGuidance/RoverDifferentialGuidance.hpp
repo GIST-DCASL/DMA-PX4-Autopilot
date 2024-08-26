@@ -48,6 +48,9 @@
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/rover_differential_guidance_status.h>
 
+//@HERO
+#include <uORB/topics/trajectory_setpoint.h>
+
 // Standard libraries
 #include <lib/pid/pid.h>
 #include <matrix/matrix/math.hpp>
@@ -96,6 +99,9 @@ public:
 	RoverDifferentialGuidance::differential_setpoint computeGuidance(float yaw, float actual_speed,
 			int nav_state);
 
+	// @HERO
+	RoverDifferentialGuidance::differential_setpoint computeOffboard(float yaw, float actual_speed);
+
 	/**
 	 * @brief Update global/ned waypoint coordinates
 	 */
@@ -114,6 +120,9 @@ private:
 	uORB::Subscription _mission_result_sub{ORB_ID(mission_result)};
 	uORB::Subscription _local_position_sub{ORB_ID(vehicle_local_position)};
 	uORB::Subscription _home_position_sub{ORB_ID(home_position)};
+
+	// @HERO
+	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 
 	// uORB publications
 	uORB::Publication<rover_differential_guidance_status_s> _rover_differential_guidance_status_pub{ORB_ID(rover_differential_guidance_status)};

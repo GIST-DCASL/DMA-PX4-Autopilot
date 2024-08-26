@@ -144,6 +144,11 @@ void RoverDifferential::Run()
 					 _nav_state);
 		break;
 
+	// @HERO
+	case vehicle_status_s::NAVIGATION_STATE_OFFBOARD:
+		_differential_setpoint = _rover_differential_guidance.computeOffboard(_vehicle_yaw, _vehicle_forward_speed);
+		break;
+
 	default: // Unimplemented nav states will stop the rover
 		_differential_setpoint.throttle = 0.f;
 		_differential_setpoint.yaw_rate = 0.f;

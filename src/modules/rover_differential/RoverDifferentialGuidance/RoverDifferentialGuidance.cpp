@@ -210,6 +210,135 @@ RoverDifferentialGuidance::differential_setpoint RoverDifferentialGuidance::comp
 	return differential_setpoint_temp;
 }
 
+RoverDifferentialGuidance::differential_setpoint RoverDifferentialGuidance::computeOffboard(const float yaw,
+		const float actual_speed)
+{
+	// Initializations
+	float desired_speed{0.f};
+	float desired_yaw_rate{0.f};
+	hrt_abstime timestamp_prev = _timestamp;
+	_timestamp = hrt_absolute_time();
+	const float dt = math::constrain(_timestamp - timestamp_prev, 1_ms, 5000_ms) * 1e-6f;
+
+	// uORB subscriber updates
+	if (_vehicle_global_position_sub.updated()) {
+		vehicle_global_position_s vehicle_global_position{};
+		_vehicle_global_position_sub.copy(&vehicle_global_position);
+		_curr_pos = Vector2d(vehicle_global_position.lat, vehicle_global_position.lon);
+	}
+
+	if (_local_position_sub.updated()) {
+		vehicle_local_position_s local_position{};
+		_local_position_sub.copy(&local_position);
+
+		if (!_global_ned_proj_ref.isInitialized()
+		    || (_global_ned_proj_ref.getProjectionReferenceTimestamp() != local_position.ref_timestamp)) {
+			_global_ned_proj_ref.initReference(local_position.ref_lat, local_position.ref_lon, local_position.ref_timestamp);
+		}
+
+		_curr_pos_ned = Vector2f(local_position.x, local_position.y);
+	}
+
+	if (_trajectory_setpoint_sub.updated()) {
+		trajectory_setpoint_s trajectory_setpoint{};
+		_trajectory_setpoint_sub.copy(&trajectory_setpoint);
+		_curr_wp_ned = Vector2f(trajectory_setpoint.position[0], trajectory_setpoint.position[1]);
+		_global_ned_proj_ref.reproject(_curr_wp_ned(0), _curr_wp_ned(1), _curr_wp(0), _curr_wp(1));
+	}
+
+	const float desired_heading = _pure_pursuit.calcDesiredHeading(_curr_wp_ned, _curr_pos_ned, _curr_pos_ned,
+				      math::max(actual_speed, 0.f));
+
+	const float heading_error = matrix::wrap_pi(desired_heading - yaw);
+
+	const float distance_to_next_wp = get_distance_to_next_waypoint(_curr_pos(0), _curr_pos(1),
+					  _curr_wp(0),
+					  _curr_wp(1));
+
+	// State machine
+	if (distance_to_next_wp > _param_nav_acc_rad.get()) {
+		if (_currentState == GuidanceState::STOPPED) {
+			_currentState = GuidanceState::DRIVING;
+		}
+
+		if (_currentState == GuidanceState::DRIVING && fabsf(heading_error) > _param_rd_trans_drv_trn.get()) {
+			pid_reset_integral(&_pid_heading);
+			_currentState = GuidanceState::SPOT_TURNING;
+
+		} else if (_currentState == GuidanceState::SPOT_TURNING && fabsf(heading_error) < _param_rd_trans_trn_drv.get()) {
+			pid_reset_integral(&_pid_heading);
+			_currentState = GuidanceState::DRIVING;
+		}
+
+	} else { // Mission finished or delay command
+		_currentState = GuidanceState::STOPPED;
+	}
+
+	// Guidance logic
+	switch (_currentState) {
+	case GuidanceState::DRIVING: {
+			desired_speed = _param_rd_miss_spd_def.get();
+
+			if (_param_rd_max_jerk.get() > FLT_EPSILON && _param_rd_max_accel.get() > FLT_EPSILON) {
+				desired_speed = math::trajectory::computeMaxSpeedFromDistance(_param_rd_max_jerk.get(),
+						_param_rd_max_accel.get(), distance_to_next_wp, 0.0f);
+				desired_speed = math::constrain(desired_speed, -_param_rd_max_speed.get(), _param_rd_max_speed.get());
+			}
+
+			desired_yaw_rate = pid_calculate(&_pid_heading, heading_error, 0.f, 0.f, dt);
+		} break;
+
+	case GuidanceState::SPOT_TURNING:
+		if (actual_speed < TURN_MAX_VELOCITY) { // Wait for the rover to stop
+			desired_yaw_rate = pid_calculate(&_pid_heading, heading_error, 0.f, 0.f, dt); // Turn on the spot
+		}
+
+		break;
+
+	case GuidanceState::STOPPED:
+	default:
+		desired_speed = 0.f;
+		desired_yaw_rate = 0.f;
+		break;
+
+	}
+
+	// Closed loop speed control
+	float throttle{0.f};
+
+	if (fabsf(desired_speed) < FLT_EPSILON) {
+		pid_reset_integral(&_pid_throttle);
+
+	} else {
+		throttle = pid_calculate(&_pid_throttle, desired_speed, actual_speed, 0,
+					 dt);
+
+		if (_param_rd_max_speed.get() > FLT_EPSILON) { // Feed-forward term
+			throttle += math::interpolate<float>(desired_speed,
+							     0.f, _param_rd_max_speed.get(),
+							     0.f, 1.f);
+		}
+	}
+
+	// Publish differential controller status (logging)
+	_rover_differential_guidance_status.timestamp = _timestamp;
+	_rover_differential_guidance_status.desired_speed = desired_speed;
+	_rover_differential_guidance_status.pid_throttle_integral = _pid_throttle.integral;
+	_rover_differential_guidance_status.lookahead_distance = _pure_pursuit.getLookaheadDistance();
+	_rover_differential_guidance_status.pid_heading_integral = _pid_heading.integral;
+	_rover_differential_guidance_status.heading_error_deg = M_RAD_TO_DEG_F * heading_error;
+	_rover_differential_guidance_status.state_machine = (uint8_t) _currentState;
+	_rover_differential_guidance_status_pub.publish(_rover_differential_guidance_status);
+
+	// Return setpoints
+	differential_setpoint differential_setpoint_temp;
+	differential_setpoint_temp.throttle = math::constrain(throttle, 0.f, 1.f);
+	differential_setpoint_temp.yaw_rate = math::constrain(desired_yaw_rate, -_max_yaw_rate,
+					      _max_yaw_rate);
+	differential_setpoint_temp.closed_loop_yaw_rate = true;
+	return differential_setpoint_temp;
+}
+
 void RoverDifferentialGuidance::updateWaypoints()
 {
 	position_setpoint_triplet_s position_setpoint_triplet{};
