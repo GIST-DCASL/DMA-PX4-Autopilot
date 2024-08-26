@@ -869,6 +869,9 @@ bool GZBridge::callSceneInfoMsgService(const std::string &service)
 	gz::msgs::Empty req;
 	gz::msgs::Scene rep;
 
+	// @HERO
+	return true;
+
 	if (_node.Request(service, req, 1000, rep, result)) {
 		if (!result) {
 			PX4_ERR("Scene Info service call failed.");
