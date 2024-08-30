@@ -210,6 +210,7 @@ RoverDifferentialGuidance::differential_setpoint RoverDifferentialGuidance::comp
 	return differential_setpoint_temp;
 }
 
+// @HERO
 RoverDifferentialGuidance::differential_setpoint RoverDifferentialGuidance::computeOffboard(const float yaw,
 		const float actual_speed)
 {
